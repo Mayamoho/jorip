@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Blocks a commit that would carry a live credential into the repo.
+# The README and the exported workflow JSON are both files people paste keys
+# into by accident, and both get committed. .env is already gitignored.
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -vE '^\.gitignore$|package-lock\.json$|yarn\.lock$' || true)
+[[ -z "$staged" ]] && exit 0
+
+fail=0
+check() {
+  local label="$1" pattern="$2"
+  local hits
+  hits=$(grep -nEI "$pattern" $staged 2>/dev/null || true)
+  if [[ -n "$hits" ]]; then
+    echo "⚠  $label:"; echo "$hits" | sed 's/^/    /'; fail=1
+  fi
+}
+
+# Google AI Studio / Gemini API keys
+check "Gemini API key"        'AQ\.[A-Za-z0-9_-]{30,}'
+# Meta long-lived / system-user tokens
+check "WhatsApp access token" 'EAAC[A-Za-z0-9]{20,}|ya29\.[0-9A-Za-z_-]{20,}'
+# Generic assignments with a real-looking value (skips empty and placeholder)
+check "hardcoded secret"      '(api_?key|secret|token|password)[A-Z_]*\s*[:=]\s*["'"'"']?[A-Za-z0-9_\-]{28,}'
+# Private keys
+check "private key block"     'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+
+if [[ $fail -eq 1 ]]; then
+  cat <<'EOF'
+
+Refusing to commit. Move the value into .env (gitignored) and read it via
+$env in n8n, or into secrets/ (also gitignored).
+
+If a real key was ever committed or pasted anywhere, rotate it — deleting the
+commit does not un-leak it.
+
+Override deliberately with:  git commit --no-verify
+EOF
+  exit 1
+fi
