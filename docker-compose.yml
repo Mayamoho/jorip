@@ -56,8 +56,13 @@ services:
       # Read by the workflow through $env so no key is ever pasted into a node
       # that ends up in an exported JSON file.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
-      GEMINI_MODEL_ESCALATE: ${GEMINI_MODEL_ESCALATE:-gemini-2.5-pro}
+      GEMINI_MODEL_ROUTE: ${GEMINI_MODEL_ROUTE:-gemini-3.1-flash-lite}
+      GEMINI_MODEL_REPLY: ${GEMINI_MODEL_REPLY:-gemini-3-flash-preview}
+      GEMINI_MODEL_HEAVY: ${GEMINI_MODEL_HEAVY:-gemini-3.8-flash}
+      GEMINI_MAX_OUTPUT_TOKENS: ${GEMINI_MAX_OUTPUT_TOKENS:-400}
+      GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-0}
+      GEMINI_EMBED_MODEL: ${GEMINI_EMBED_MODEL:-gemini-embedding-001}
+      GEMINI_EMBED_DIMS: ${GEMINI_EMBED_DIMS:-768}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}

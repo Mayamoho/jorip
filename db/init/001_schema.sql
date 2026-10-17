@@ -97,7 +97,8 @@ create index if not exists slot_free_window on slot (starts_at) where status = '
 
 -- ── Grounding ────────────────────────────────────────────────────────
 -- Every answer must cite a chunk id. No chunk above threshold ⇒ escalate.
--- 768 dims = text-embedding-004.
+-- gemini-embedding-001 returns 3072 dims by DEFAULT; every embed call must
+-- pass outputDimensionality = 768 or the insert below fails on width.
 create table if not exists knowledge (
   id          serial primary key,
   doc         text not null,

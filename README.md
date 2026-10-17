@@ -16,8 +16,34 @@ Under construction. This section states plainly what runs today, because a READM
 | --- | --- |
 | ✅ | `docker compose up` → n8n + Postgres/pgvector, app schema migrated |
 | ✅ | Public URL via Cloudflare tunnel, `WEBHOOK_URL` rewired automatically |
+| ✅ | Model tier measured against the live key, not copied from a docs table |
 | 🚧 | WhatsApp sandbox round-trip |
 | ⬜ | Session state, grounding, extraction, scoring, booking, eval battery |
+
+---
+
+## Measured, not assumed
+
+Model availability is per-key and it moves faster than any table of it. `scripts/probe-models.mjs` sends one tiny fixed prompt to each candidate and prints what actually came back. Run against this key on 2026-10-17:
+
+| model | http | |
+| --- | --- | --- |
+| `gemini-3.1-flash-lite` | 200 | routing + extraction tier |
+| `gemini-3-flash-preview` | 200 | reply tier — fastest thing that answered correctly |
+| `gemini-3.8-flash` | 200 | heavy tier |
+| `gemini-3.1-pro-preview` | **429** | reachable in name, zero budget on this tier |
+| `gemini-2.5-flash`, `-pro`, `-flash-lite` | **404** | retired for new keys |
+| `text-embedding-004` | **404** | gone |
+
+Three findings that changed the design rather than just the config:
+
+**There is no Pro rung.** The escalation tier I first configured pointed at a model this key cannot call. The live ladder is `flash-lite → flash`, and the heavy model is reserved for the offline eval comparison. A routing table with an unreachable tier in it is a runtime error waiting for a hot lead.
+
+**`gemini-3.8-flash` is a thinking model.** At `maxOutputTokens: 8` it spent 5 thought tokens and returned an *empty visible reply* — a blank message to a customer, with a 200 and no error. Output budget is 400, and `thoughtsTokenCount` is billed, so it belongs in the cost table.
+
+**`gemini-embedding-001` defaults to 3072 dimensions.** The schema declares `vector(768)`, so every embed call must pass `outputDimensionality: 768` explicitly or the insert fails somewhere far away from the cause.
+
+Latency above is a single call and it lies: the same model measured 13.9 s / 3.2 s / 1.1 s on three consecutive requests. Anything this README quotes about speed will be a median of N, never one sample.
 
 ---
 
