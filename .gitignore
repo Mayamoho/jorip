@@ -1,0 +1,7 @@
+secrets/
+.env
+node_modules/
+*.log
+.claude/
+.DS_Store
+n8n/workflows/*.backup.json

@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jorip}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing — copy .env.example to .env}
+      POSTGRES_DB: ${POSTGRES_DB:-jorip}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jorip} -d ${POSTGRES_DB:-jorip}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: 256m
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # n8n's own tables live in the same Postgres cluster, separate concern
+      # from the app schema created by db/init.
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-jorip}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-jorip}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_POSTGRESDB_SCHEMA: n8n
+
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY missing — openssl rand -hex 32}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      # A tunnel URL is https; n8n must not strip or rewrite it.
+      N8N_SECURE_COOKIE: "false"
+
+      GENERIC_TIMEZONE: Asia/Dhaka
+      TZ: Asia/Dhaka
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: 336
+      # Keeps the container inside a 2 GB laptop budget.
+      N8N_CONCURRENCY_PRODUCTION_LIMIT: 5
+      NODE_OPTIONS: --max-old-space-size=768
+
+      # Read by the workflow through $env so no key is ever pasted into a node
+      # that ends up in an exported JSON file.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL_ESCALATE: ${GEMINI_MODEL_ESCALATE:-gemini-2.5-pro}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+      - ./secrets:/secrets:ro
+    ports:
+      - "127.0.0.1:5678:5678"
+    mem_limit: 1100m
+
+volumes:
+  pgdata:
+  n8n_data:
