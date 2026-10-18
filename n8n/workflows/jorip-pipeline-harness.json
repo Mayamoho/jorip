@@ -1,0 +1,358 @@
+{
+  "name": "JORIP — pipeline harness (n8n execute, WhatsApp stubbed)",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": []
+        },
+        "inputSource": "passthrough",
+        "options": {}
+      },
+      "id": "90000000-0000-4000-8000-000000000001",
+      "name": "Harness start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -900,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Exactly the envelope n8n's Webhook node hands downstream in production: the parsed POST\n// body under `body`, because that is the shape the nodes under test must be written against.\n// Emitting it bare here would prove the harness and leave production reading `undefined`.\nconst stamp = Date.now();\nreturn [{ json: {\n  headers: { 'content-type': 'application/json' },\n  params: {}, query: {},\n  body: {\n    verified: true,\n    phone_number_id: '222222222222222',\n    messages: [{\n      wamid: 'wamid.HARNESS_' + stamp,\n      wa_number: '8801700000077',\n      profile_name: 'পরীক্ষা গ্রাহক',\n      body: 'আমার বাজেট ৩০,০০০ টাকা। আমি নিজে সিদ্ধান্ত নিতে পারি, এক মাসের মধ্যে শুরু করতে চাই।',\n      message_type: 'text',\n      sent_at: new Date().toISOString(),\n    }],\n    statuses: [], ignored: 0, reason: null,\n  },\n} }];"
+      },
+      "id": "90000000-0000-4000-8000-000000000002",
+      "name": "Fabricate a Meta delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -680,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n's Webhook node delivers the parsed POST body under `body`. The harness fabricates\n// the same envelope, so both paths resolve to the identical object here.\nconst wire = $input.first().json;\nconst payload = wire?.body ?? wire;\n\n// The flag core/inbound.mjs sets after a successful HMAC. Not an authentication mechanism —\n// the network boundary is that — but it keeps the pipeline from acting on anything that did\n// not come through the verifier, including a manual test run against the wrong URL.\nif (payload.verified !== true) {\n  throw new Error('pipeline invoked with verified !== true: the brain did not authenticate this body');\n}\n\nconst rows = [];\nfor (const m of payload.messages ?? []) {\n  // Only text is answerable. A voice note, sticker or document has no body the agent can\n  // read, and record-inbound.sql deliberately stores nothing for it — replying to text\n  // that never arrived is worse than staying quiet.\n  if (m.message_type !== 'text' || typeof m.body !== 'string' || !m.body.length) continue;\n  rows.push({\n    wamid: m.wamid,\n    wa_number: m.wa_number,\n    profile_name: m.profile_name ?? null,\n    body: m.body,\n    sent_at: m.sent_at ?? null,\n    phone_number_id: payload.phone_number_id ?? null,\n  });\n}\n\nrows.sort((a, b) => String(a.sent_at ?? '').localeCompare(String(b.sent_at ?? '')));\n// A batch can carry three texts from one lead. They are all stored, and only the last is\n// answered — otherwise the lead gets three replies about a conversation they already moved\n// past, and the model answers each one without the context of the others.\nconst lastOf = new Map(rows.map((r) => [r.wa_number, r.wamid]));\nconst answer = new Set(rows.filter((r) => lastOf.get(r.wa_number) === r.wamid).map((r) => r.wamid));\n\n// Returning [] ends the run. Read receipts, echoes of our own messages and voice notes all\n// land here; they are normal traffic, not errors, and the ack has already been sent.\nreturn rows.map((r, i) => ({ json: { ...r, answer: answer.has(r.wamid), seq: i } }));"
+      },
+      "id": "90000000-0000-4000-8000-000000000003",
+      "name": "Split and filter messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nWITH l AS (\n  INSERT INTO lead (wa_number, display_name)\n  VALUES ($1, $2)\n  ON CONFLICT (wa_number) DO UPDATE\n    SET display_name = COALESCE(EXCLUDED.display_name, lead.display_name),\n        last_seen_at = now()\n  RETURNING id\n),\nexisting AS (\n  SELECT id FROM session\n  WHERE lead_id IN (SELECT id FROM l) AND status = 'open'\n  ORDER BY updated_at DESC\n  LIMIT 1\n),\ncreated AS (\n  INSERT INTO session (lead_id, status, context)\n  SELECT l.id, 'open', '{}'::jsonb\n  FROM l\n  WHERE NOT EXISTS (SELECT 1 FROM existing)\n  ON CONFLICT (lead_id) WHERE status = 'open' DO NOTHING\n  RETURNING id\n),\nsess AS (\n  SELECT id FROM existing\n  UNION ALL\n  SELECT id FROM created\n),\nmsg AS (\n  INSERT INTO message (wamid, session_id, direction, body)\n  SELECT $3, sess.id, 'in', $4\n  FROM sess\n  WHERE $4 IS NOT NULL\n  ON CONFLICT (wamid) DO NOTHING\n  RETURNING 1\n),\ntouch AS (\n  UPDATE session SET updated_at = now()\n  WHERE id IN (SELECT id FROM sess)\n  RETURNING 1\n)\nSELECT sess.id                         AS session_id,\n       $3                              AS wamid,\n       (SELECT count(*) FROM msg) > 0  AS inserted\nFROM sess\nLIMIT 1",
+        "options": {
+          "queryReplacement": "={{ [$json.wa_number, $json.profile_name, $json.wamid, $json.body] }}"
+        }
+      },
+      "id": "90000000-0000-4000-8000-000000000004",
+      "name": "Store inbound",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jorip-postgres",
+          "name": "Jorip Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const pending = new Map($('Split and filter messages').all()\n  .map((i) => [i.json.wamid, i.json]));\n\n// 'Store inbound' runs once per item and returns the wamid it stored, so the join is on the\n// key rather than on output position. It cannot be positional: record-inbound.sql returns\n// ZERO rows when two webhooks race to open a lead's session, and from there on every index\n// after that item points at the wrong message — the failure would be two bots for one lead.\n//\n// The inserted flag comes from an ON CONFLICT DO NOTHING row count: false means Meta retried a\n// delivery we already answered. The reply to a duplicate is silence, which is the whole\n// idempotency design — no separate dedupe table to drift out of sync.\nconst out = [];\nfor (const item of $input.all()) {\n  const lead = pending.get(item.json.wamid);\n  if (!lead) continue;\n  if (item.json.inserted !== true || typeof item.json.session_id !== 'string') continue;\n  if (lead.answer !== true) continue;\n  out.push({ json: { ...lead, session_id: item.json.session_id } });\n}\nreturn out;"
+      },
+      "id": "90000000-0000-4000-8000-000000000005",
+      "name": "Drop redeliveries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH recent AS (\n  SELECT session_id, wamid, direction, body, created_at\n  FROM message\n  WHERE session_id = $1\n    AND wamid <> $2\n  ORDER BY created_at DESC, wamid DESC\n  LIMIT $3\n)\nSELECT session_id, direction, body\nFROM recent\nORDER BY created_at ASC, wamid ASC",
+        "options": {
+          "queryReplacement": "={{ [$json.session_id, $json.wamid, 20] }}"
+        }
+      },
+      "id": "90000000-0000-4000-8000-000000000006",
+      "name": "Load history",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jorip-postgres",
+          "name": "Jorip Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// 'Load history' ran once per lead, and its rows arrive as one flat list. session_id is on\n// every row precisely so this grouping needs no assumption about item counts: two leads in\n// one webhook get two transcripts, and a lead whose session has no history yet gets [].\nconst bySession = new Map();\nfor (const item of $input.all()) {\n  const { session_id, direction, body } = item.json;\n  if (!bySession.has(session_id)) bySession.set(session_id, []);\n  bySession.get(session_id).push({ direction, body });\n}\n\n// One item per lead. The current message is excluded by the query and appended by\n// core/normalise.mjs as the current body; putting it in here would repeat the lead's own words.\nreturn $('Drop redeliveries').all().map((i) => ({ json: {\n  ...i.json,\n  history: bySession.get(i.json.session_id) ?? [],\n  taken_slots: [],\n} }));"
+      },
+      "id": "90000000-0000-4000-8000-000000000007",
+      "name": "Assemble the transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.JORIP_BRAIN_URL ?? 'http://brain:8788') + '/reply' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-jorip-token",
+              "value": "={{ $env.JORIP_SHARED_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: $json.body, history: $json.history, taken_slots: $json.taken_slots }) }}",
+        "options": {
+          "timeout": 25000
+        }
+      },
+      "id": "90000000-0000-4000-8000-000000000008",
+      "name": "Ask the brain",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const turn = $input.first().json;\nconst lead = $('Assemble the transcript').first().json;\n\n// The accepted JSON came from the LAST call the brain made: the extract call if it validated\n// first time, the repair call otherwise. Naming the model that actually answered is what\n// makes v_model_distribution a measurement instead of a guess.\nconst usage = Array.isArray(turn.usage) ? turn.usage : [];\nconst last = usage[usage.length - 1] ?? {};\nconst s = turn.score ?? {};\nconst facts = turn.extraction ?? {};\n\nreturn [{ json: {\n  session_id: lead.session_id,\n  wamid: lead.wamid,\n  wa_number: lead.wa_number,\n  reply: turn.reply,\n  reply_source: turn.reply_source ?? 'template',\n  hotness: s.hotness ?? null,\n  need: facts.need ?? null,\n  budget_bdt: facts.budget_bdt ?? null,\n  timeline: facts.timeline ?? null,\n  authority: facts.authority ?? null,\n  confidence: facts.confidence ?? null,\n  model: last.model ?? 'unknown',\n  tier: last.tier ?? 'flash',\n  repair_attempts: turn.repair_attempts ?? 0,\n  raw: JSON.stringify(facts),\n  need_pts: s.need_pts ?? 0,\n  budget_pts: s.budget_pts ?? 0,\n  timeline_pts: s.timeline_pts ?? 0,\n  authority_pts: s.authority_pts ?? 0,\n  total: s.total ?? 0,\n  rule_version: turn.rule_version ?? 'v1',\n  escalations: JSON.stringify(turn.escalations ?? []),\n} }];"
+      },
+      "id": "90000000-0000-4000-8000-000000000009",
+      "name": "Shape what gets recorded",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Test double for the Graph API. Meta's response carries the echo id that\n// message.wamid stores, and that id is what makes a retried send a no-op; the stub returns\n// the same shape so the two write nodes downstream are exercised for real. Per-item mode,\n// because that is what keeps the item pairing the write nodes resolve their inputs through.\nreturn { messaging_product: 'whatsapp', messages: [{ id: 'wamid.HARNESS_ECHO_' + Date.now() }] };"
+      },
+      "id": "90000000-0000-4000-8000-000000000010",
+      "name": "Stub the send (harness)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nWITH ins AS (\n  INSERT INTO message (wamid, session_id, direction, body)\n  VALUES ($2, $1, 'out', $3)\n  ON CONFLICT (wamid) DO NOTHING\n  RETURNING 1\n),\ntouch AS (\n  UPDATE session SET updated_at = now()\n  WHERE id = $1\n  RETURNING 1\n)\nSELECT $1::uuid        AS session_id,\n       (SELECT count(*) FROM ins) > 0    AS stored,\n       (SELECT count(*) FROM touch) > 0  AS session_touched",
+        "options": {
+          "queryReplacement": "={{ [$('Shape what gets recorded').item.json.session_id, $json.messages?.[0]?.id ?? null, $('Shape what gets recorded').item.json.reply] }}"
+        }
+      },
+      "id": "90000000-0000-4000-8000-000000000011",
+      "name": "Store outbound",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1300,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jorip-postgres",
+          "name": "Jorip Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nWITH ex AS (\n  INSERT INTO extraction\n    (session_id, message_wamid, need, budget_bdt, timeline, authority, confidence, model, tier, repair_attempts, raw)\n  VALUES\n    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)\n  RETURNING id\n),\nsc AS (\n  INSERT INTO score\n    (extraction_id, session_id, need_pts, budget_pts, timeline_pts, authority_pts, total, hotness, rule_version)\n  SELECT ex.id, $1, $12, $13, $14, $15, $16, $17, $18\n  FROM ex\n  RETURNING extraction_id\n),\nesc AS (\n  INSERT INTO escalation (session_id, reason_code)\n  SELECT $1, value\n  FROM jsonb_array_elements_text($19::jsonb) AS value\n  WHERE value <> ''\n  RETURNING id\n)\nSELECT (SELECT id FROM ex)                          AS extraction_id,\n       (SELECT count(*) FROM sc) > 0                 AS score_written,\n       (SELECT count(*) FROM esc)                    AS escalations_written",
+        "options": {
+          "queryReplacement": "={{ [$('Shape what gets recorded').item.json.session_id, $('Shape what gets recorded').item.json.wamid, $('Shape what gets recorded').item.json.need, $('Shape what gets recorded').item.json.budget_bdt, $('Shape what gets recorded').item.json.timeline, $('Shape what gets recorded').item.json.authority, $('Shape what gets recorded').item.json.confidence, $('Shape what gets recorded').item.json.model, $('Shape what gets recorded').item.json.tier, $('Shape what gets recorded').item.json.repair_attempts, $('Shape what gets recorded').item.json.raw, $('Shape what gets recorded').item.json.need_pts, $('Shape what gets recorded').item.json.budget_pts, $('Shape what gets recorded').item.json.timeline_pts, $('Shape what gets recorded').item.json.authority_pts, $('Shape what gets recorded').item.json.total, $('Shape what gets recorded').item.json.hotness, $('Shape what gets recorded').item.json.rule_version, $('Shape what gets recorded').item.json.escalations] }}"
+        }
+      },
+      "id": "90000000-0000-4000-8000-000000000012",
+      "name": "Record the turn",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1520,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jorip-postgres",
+          "name": "Jorip Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Harness start": {
+      "main": [
+        [
+          {
+            "node": "Fabricate a Meta delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fabricate a Meta delivery": {
+      "main": [
+        [
+          {
+            "node": "Split and filter messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split and filter messages": {
+      "main": [
+        [
+          {
+            "node": "Store inbound",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store inbound": {
+      "main": [
+        [
+          {
+            "node": "Drop redeliveries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drop redeliveries": {
+      "main": [
+        [
+          {
+            "node": "Load history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load history": {
+      "main": [
+        [
+          {
+            "node": "Assemble the transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble the transcript": {
+      "main": [
+        [
+          {
+            "node": "Ask the brain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask the brain": {
+      "main": [
+        [
+          {
+            "node": "Shape what gets recorded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape what gets recorded": {
+      "main": [
+        [
+          {
+            "node": "Stub the send (harness)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stub the send (harness)": {
+      "main": [
+        [
+          {
+            "node": "Store outbound",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store outbound": {
+      "main": [
+        [
+          {
+            "node": "Record the turn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -48,14 +48,18 @@ create index if not exists message_by_session on message (session_id, created_at
 -- ── What the model extracted ─────────────────────────────────────────
 -- Keys and numbers only. `raw` is kept so a human can audit the exact
 -- JSON the model returned against what the pipeline decided to do with it.
+--
+-- The enums below are owned by core/vocab.mjs and enforced by CHECK constraints in
+-- 002_constraints.sql. They used to be only the comments you see here, and they drifted
+-- from the scorer; a prose enum cannot fail a write, so nothing failed.
 create table if not exists extraction (
   id                 bigint generated always as identity primary key,
   session_id         uuid not null references session(id) on delete cascade,
   message_wamid      text references message(wamid),
-  need               text,
+  need               text,             -- specific_programme | category | vague | none
   budget_bdt         integer,          -- null = not yet known; never defaulted to 0
-  timeline           text,             -- now | 1m | 3m | later | null
-  authority          text,             -- self | team | boss | unknown
+  timeline           text,             -- now | within_month | within_quarter | later | unknown
+  authority          text,             -- self | boss_or_team | unknown
   confidence         numeric(3,2),
   model              text not null,
   tier               text not null check (tier in ('flash','escalated','cached')),
@@ -75,7 +79,10 @@ create table if not exists score (
   timeline_pts   smallint not null,
   authority_pts  smallint not null,
   total          smallint not null,
-  hotness        text not null check (hotness in ('hot','warm','cold')),
+  -- nullable on purpose: score() returns hotness = null with action 'clarify' when
+  -- confidence is below MIN_CONFIDENCE. Absence of a classification is not a
+  -- classification, and 002_constraints.sql enforces the enum around the NULL.
+  hotness        text check (hotness in ('hot','warm','cold')),
   rule_version   text not null default 'v1',
   created_at     timestamptz not null default now()
 );
@@ -115,7 +122,9 @@ create index if not exists knowledge_search on knowledge
 create table if not exists turn_cost (
   id             bigint generated always as identity primary key,
   session_id     uuid references session(id) on delete cascade,
-  step           text not null,          -- route | extract | reply | embed | escalate
+  step           text not null,          -- extract | repair today; reply | embed | escalate pending
+                                          -- deliberately unconstrained: a cost row must never
+                                          -- break a conversation that is already answered
   model          text not null,
   tier           text not null,
   tokens_in      integer not null default 0,
@@ -133,8 +142,10 @@ create table if not exists escalation (
   id          bigint generated always as identity primary key,
   session_id  uuid not null references session(id) on delete cascade,
   reason_code text not null,
-    -- no_source_above_threshold | human_requested | out_of_scope
-    -- repeated_repair_failure | injection_suspected | hot_lead_alert
+    -- slot_choice_missing | repeated_repair_failure | hot_lead_alert | out_of_scope
+    -- (live now) | no_source_above_threshold | human_requested (grounding path)
+    -- 001 also listed injection_suspected; nothing produces it and nothing should —
+    -- the injection defence is structural, not logged. 002_constraints.sql enforces this.
   alerted_at  timestamptz not null default now()
 );
 

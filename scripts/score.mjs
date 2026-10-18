@@ -7,11 +7,32 @@
 //
 // Body of the n8n Code node; kept standalone so eval/ can import it directly.
 
+import { NEED, TIMELINE, AUTHORITY } from '../core/vocab.mjs';
+
 export const RULE_VERSION = 'v1';
 
-const NEED = { specific_programme: 25, category: 15, vague: 7, none: 0 };
-const AUTHORITY = { self: 15, boss_or_team: 9, unknown: 0 };
-const TIMELINE = { now: 25, within_month: 18, within_quarter: 10, later: 0, unknown: 0 };
+const NEED_TABLE = { specific_programme: 25, category: 15, vague: 7, none: 0 };
+const AUTHORITY_TABLE = { self: 15, boss_or_team: 9, unknown: 0 };
+const TIMELINE_TABLE = { now: 25, within_month: 18, within_quarter: 10, later: 0, unknown: 0 };
+
+// The schema once spelled `timeline` as 1m|3m while this table said within_month.
+// pick() would then have returned 0 for a correct extraction and every lead would
+// have looked cold with nothing in the logs saying so. Fail loudly at import
+// instead: these tables and core/vocab.mjs must name the same values.
+function assertCoverage(name, table, allowed) {
+  const keys = Object.keys(table);
+  const missing = allowed.filter((k) => !keys.includes(k));
+  const extra = keys.filter((k) => !allowed.includes(k));
+  if (missing.length || extra.length) {
+    throw new Error(
+      `${name} is out of step with core/vocab.mjs — missing [${missing}] unknown [${extra}]. ` +
+      'Unlisted values score 0 silently, which reads as a cold lead rather than a bug.',
+    );
+  }
+}
+assertCoverage('NEED_TABLE', NEED_TABLE, NEED);
+assertCoverage('TIMELINE_TABLE', TIMELINE_TABLE, TIMELINE);
+assertCoverage('AUTHORITY_TABLE', AUTHORITY_TABLE, AUTHORITY);
 
 const BUDGET_BANDS = [
   { min: 30000, pts: 25 },
@@ -35,10 +56,10 @@ function pick(table, key) {
 }
 
 export function score(x) {
-  const need_pts = pick(NEED, x.need);
+  const need_pts = pick(NEED_TABLE, x.need);
   const budget_pts = budgetPoints(x.budget_bdt);
-  const timeline_pts = pick(TIMELINE, x.timeline);
-  const authority_pts = pick(AUTHORITY, x.authority);
+  const timeline_pts = pick(TIMELINE_TABLE, x.timeline);
+  const authority_pts = pick(AUTHORITY_TABLE, x.authority);
   const total = need_pts + budget_pts + timeline_pts + authority_pts;
 
   const base = { need_pts, budget_pts, timeline_pts, authority_pts, total, rule_version: RULE_VERSION };

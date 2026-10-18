@@ -68,6 +68,10 @@ services:
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # The brain, by service name. n8n never holds the Gemini key on this path —
+      # it asks the brain for a decision and gets JSON back.
+      JORIP_BRAIN_URL: ${JORIP_BRAIN_URL:-http://brain:8788}
+      JORIP_SHARED_SECRET: ${JORIP_SHARED_SECRET:-}
     volumes:
       - n8n_data:/home/node/.n8n
       - ./n8n/workflows:/workflows:ro
@@ -75,6 +79,51 @@ services:
     ports:
       - "127.0.0.1:5678:5678"
     mem_limit: 1100m
+
+  # The agent's judgement, as a long-lived process. Same modules as the Vercel
+  # function — this service adds HTTP routes, not logic — so the WhatsApp path and
+  # the web front door cannot drift apart. n8n's Code node runs in a sandbox where
+  # importing these files is not reliable, so the crypto and the enum checks live
+  # here instead of in a workflow node.
+  brain:
+    image: node:22-slim
+    restart: unless-stopped
+    working_dir: /srv/jorip
+    # No npm install: the brain uses only Node built-ins and local modules, so the
+    # container has nothing to pull at start and the cold boot is a fork, not a build.
+    command: ["node", "scripts/brain-server.mjs"]
+    environment:
+      JORIP_BRAIN_HOST: 0.0.0.0
+      JORIP_BRAIN_PORT: 8788
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL_ROUTE: ${GEMINI_MODEL_ROUTE:-gemini-3.1-flash-lite}
+      GEMINI_MODEL_REPLY: ${GEMINI_MODEL_REPLY:-gemini-3-flash-preview}
+      GEMINI_MODEL_HEAVY: ${GEMINI_MODEL_HEAVY:-gemini-3.8-flash}
+      GEMINI_MAX_OUTPUT_TOKENS: ${GEMINI_MAX_OUTPUT_TOKENS:-400}
+      GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-0}
+      JORIP_MODEL_TIMEOUT_MS: ${JORIP_MODEL_TIMEOUT_MS:-12000}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      JORIP_SHARED_SECRET: ${JORIP_SHARED_SECRET:-}
+      # The edge's only outbound call: verified, normalised messages go to n8n's webhook and
+      # n8n owns the database, the model turn and the send. If this is unreachable the brain
+      # answers 502 so Meta retries, rather than acknowledging a message nobody stored.
+      JORIP_PIPELINE_URL: ${JORIP_PIPELINE_URL:-http://n8n:5678/webhook/jorip-pipeline}
+      JORIP_HANDOFF_TIMEOUT_MS: ${JORIP_HANDOFF_TIMEOUT_MS:-8000}
+    volumes:
+      - ./core:/srv/jorip/core:ro
+      - ./scripts:/srv/jorip/scripts:ro
+      - ./api:/srv/jorip/api:ro
+      - ./web:/srv/jorip/web:ro
+    ports:
+      - "127.0.0.1:8788:8788"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    mem_limit: 192m
 
 volumes:
   pgdata:

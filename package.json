@@ -1,0 +1,17 @@
+{
+  "name": "jorip",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsApp and web intake agent: extracts, scores with published arithmetic, books only slots the server holds.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test eval/*.test.mjs",
+    "verify": "node scripts/verify-agent.mjs",
+    "probe": "node scripts/probe-models.mjs",
+    "simulate:meta": "node scripts/simulate-meta.mjs",
+    "verify:sql": "node scripts/verify-sql.mjs"
+  }
+}

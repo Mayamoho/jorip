@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jorip — intake agent that qualifies and books | Small Makers Studio</title>
+<meta name="description" content="A live lead-intake agent. It reads a messy WhatsApp message, extracts need, budget, timeline and decision authority, scores them with published arithmetic, and only offers a call slot the server actually holds." />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header>
+  <h1>Jorip <span>· জরিপ</span></h1>
+  <span style="color:var(--dim);font-size:13px">intake agent — it qualifies, then offers only a slot the server holds</span>
+</header>
+
+<main>
+  <section id="chat">
+    <div id="log" aria-live="polite"></div>
+    <div class="examples" id="examples"></div>
+    <form id="f">
+      <textarea id="t" rows="2" maxlength="1200" placeholder="Type as you would on WhatsApp — Bangla or English."></textarea>
+      <button id="s" type="submit">Send</button>
+    </form>
+    <p class="note">Demo. The transcript lives in this tab only — nothing here is written to a database, and
+      a real deployment keeps it in Postgres. Decisions are live, not scripted.</p>
+  </section>
+
+  <aside id="why" class="empty">
+    <h2>why it answered that way</h2>
+    <div id="whybody">Nothing scored yet. Send a message that mentions a need, a budget, a timeline or who decides.</div>
+    <details id="rawwrap" hidden>
+      <summary>raw decision</summary>
+      <pre id="raw"></pre>
+    </details>
+  </aside>
+</main>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
